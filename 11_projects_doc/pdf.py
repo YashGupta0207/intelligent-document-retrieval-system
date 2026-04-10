@@ -28,7 +28,7 @@ os.environ["HUGGINGFACEHUB_API_TOKEN"] = HUGGINGFACE_API_KEY or ""
 # 📦 Imports after keys
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pypdf import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
