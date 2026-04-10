@@ -1,17 +1,50 @@
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 import streamlit as st
-from pypdf import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 import os
-from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
-from docx import Document
-from langchain_core.output_parsers import StrOutputParser
+from dotenv import load_dotenv
+
+# 🔐 Load environment variables
 load_dotenv()
 
-llm = ChatOpenAI(model="openai/gpt-4o-mini", base_url="https://openrouter.ai/api/v1")
+# 🔐 Load API keys (works for both local + deployment)
+OPENAI_API_KEY = None
+HUGGINGFACE_API_KEY = None
+
+try:
+    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    HUGGINGFACE_API_KEY = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
+except:
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+
+# ❌ Stop app if key missing
+if not OPENAI_API_KEY:
+    st.error("❌ OpenAI API key not found. Add it in .env or secrets.toml")
+    st.stop()
+
+# Set env variables
+os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+os.environ["HUGGINGFACEHUB_API_TOKEN"] = HUGGINGFACE_API_KEY or ""
+
+# 📦 Imports after keys
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pypdf import PdfReader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from docx import Document
+
+
+# 🤖 LLM Setup (OpenRouter)
+llm = ChatOpenAI(
+    model="openai/gpt-4o-mini",
+    base_url="https://openrouter.ai/api/v1"
+)
+
 parser = StrOutputParser()
+
+
+# 📄 Extract text
 def get_pdf_text(files):
     text = ""
 
@@ -31,79 +64,120 @@ def get_pdf_text(files):
 
     return text
 
+
+# ✂️ Split text (optimized)
 def get_text_chunks(text):
-    text_split = RecursiveCharacterTextSplitter(chunk_size = 10000,chunk_overlap = 2000)
-    chunks = text_split.split_text(text)
-    return chunks
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=2000,
+        chunk_overlap=200
+    )
+    return text_splitter.split_text(text)
 
+
+# 🧠 Create FAISS store
 def get_vector_store(text_chunks):
-    embed = OpenAIEmbeddings(model="text-embedding-3-small",base_url="https://openrouter.ai/api/v1")
-    vector_store = FAISS.from_texts(text_chunks,embedding=embed)
-    vector_store.save_local("faiss_index")
-
-
-def get_conver_chain():
-    prompt_temp = """Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in the provided  context just say,"answer is not available in the context" don't provide the wrong answer.
-    
-    Context: \n{context}\n
-    Question: \n{question}\n
-
-    Answer:
-    """
-    prompt = PromptTemplate(template=prompt_temp,input_variables=['context','question'])
-    chain = prompt | llm | parser
-
-    return chain
-
-def user_input(user_question):
-    embedd = OpenAIEmbeddings(
+    embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",
         base_url="https://openrouter.ai/api/v1"
     )
 
-    new_db = FAISS.load_local(
-    "faiss_index",
-    embedd,
-    allow_dangerous_deserialization=True
-)
+    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
+    vector_store.save_local("faiss_index")
 
 
-    docs = new_db.similarity_search(user_question)
+# 🔗 Conversation chain
+def get_conversation_chain():
+    prompt_template = """
+    Answer the question as detailed as possible from the provided context.
+    If the answer is not in the context, say:
+    "Answer is not available in the context."
 
+    Context:
+    {context}
+
+    Question:
+    {question}
+
+    Answer:
+    """
+
+    prompt = PromptTemplate(
+        template=prompt_template,
+        input_variables=["context", "question"]
+    )
+
+    chain = prompt | llm | parser
+    return chain
+
+
+# 💬 Handle query
+def user_input(user_question):
+    if not os.path.exists("faiss_index"):
+        st.warning("⚠️ Please upload and process documents first.")
+        return
+
+    embeddings = OpenAIEmbeddings(
+        model="text-embedding-3-small",
+        base_url="https://openrouter.ai/api/v1"
+    )
+
+    db = FAISS.load_local(
+        "faiss_index",
+        embeddings,
+        allow_dangerous_deserialization=True
+    )
+
+    docs = db.similarity_search(user_question, k=4)
     context = "\n\n".join(doc.page_content for doc in docs)
 
-    chain = get_conver_chain()
+    chain = get_conversation_chain()
 
     response = chain.invoke({
         "context": context,
         "question": user_question
     })
 
-    st.write("Reply:", response)
+    st.write("### 🤖 Reply:")
+    st.write(response)
 
 
+# 🖥️ UI
 def main():
-    st.set_page_config("Chat With Multiple PDF")
-    st.header("Chat with Multiple PDF using OpenAI🧑‍💻")
+    st.set_page_config(page_title="Chat with Documents", layout="wide")
 
-    user_question = st.text_input("Ask a Question from the PDF Files")
+    st.header("📄 Chat with Multiple PDFs & DOCX 🧠")
+
+    user_question = st.text_input("💬 Ask a question from your documents")
 
     if user_question:
         user_input(user_question)
 
     with st.sidebar:
-        st.title("Menu:")
-        pdf_docs = st.file_uploader(
-            "Upload your PDF Files and Click on the Submit & Process Button",
+        st.title("📁 Upload Documents")
+
+        files = st.file_uploader(
+            "Upload PDF or DOCX files",
             accept_multiple_files=True
         )
-        if st.button("Submit & Process"):
-            with st.spinner("Processing..."):
-                raw_text = get_pdf_text(pdf_docs)
-                text_chunks = get_text_chunks(raw_text)
-                get_vector_store(text_chunks)
-                st.success("Done")
- 
 
-if __name__ == '__main__':
+        if st.button("🚀 Submit & Process"):
+            if not files:
+                st.warning("Please upload at least one file.")
+                return
+
+            with st.spinner("Processing documents..."):
+                raw_text = get_pdf_text(files)
+
+                if not raw_text.strip():
+                    st.error("No readable text found in files.")
+                    return
+
+                chunks = get_text_chunks(raw_text)
+                get_vector_store(chunks)
+
+                st.success("✅ Documents processed successfully!")
+
+
+# 🚀 Run
+if __name__ == "__main__":
     main()
